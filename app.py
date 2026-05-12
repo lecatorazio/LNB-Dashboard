@@ -115,6 +115,17 @@ df["FOUL"] = df["stat_foulsTotal"].fillna(0)
 df["PM"]   = df["stat_plusMinus"].fillna(0)
 
 # =========================
+# NORMALISATION DES POSITIONS
+# =========================
+POSITION_MAP = {
+    "PG": "Guard", "G": "Guard", "SG": "Guard", "GF": "Guard",
+    "SF": "Forward", "FG": "Forward", "F": "Forward", "PF": "Forward",
+    "FC": "Big", "C": "Big",
+}
+if "position" in df.columns:
+    df["position"] = df["position"].map(POSITION_MAP).fillna(df["position"])
+
+# =========================
 # HOME / AWAY
 # =========================
 if "side" in df.columns:
@@ -314,7 +325,8 @@ df["PER"] = safe_div(1, df["MIN"]) * (
 )
 
 # =========================
-# SIDEBAR  ← competition_filter défini ici en premier
+# SIDEBAR
+# ← competition_filter défini ici en premier
 # =========================
 with st.sidebar:
     st.title("🏀 LNB Dashboard")
@@ -327,7 +339,13 @@ with st.sidebar:
         index=0
     )
 
-    teams_list = ["Toutes"] + sorted(df["team_name"].dropna().unique().tolist())
+    # ── Filtre équipes dynamique : on ne propose que les équipes
+    #    présentes dans la compétition sélectionnée ──────────────
+    teams_in_comp = sorted(
+        df[df["competition"] == competition_filter]["team_name"]
+        .dropna().unique().tolist()
+    )
+    teams_list = ["Toutes"] + teams_in_comp
     team_filter = st.selectbox("Équipe", teams_list)
 
     pos_list = ["Toutes"] + sorted(df["position"].dropna().unique().tolist()) \
@@ -339,7 +357,8 @@ with st.sidebar:
     min_min = st.slider("Minutes min. (saison)", 0, 500, 50, step=10)
 
 # =========================
-# AGRÉGATION SAISON JOUEURS  ← après la sidebar, filtrée par compétition
+# AGRÉGATION SAISON JOUEURS
+# ← après la sidebar, filtrée par compétition
 # =========================
 sum_cols = ["MIN", "PTS", "AST", "REB", "OREB", "DREB", "STL", "BLK",
             "TOV", "FGM", "FGA", "FTM", "FTA", "3PM", "3PA", "FOUL",
@@ -363,10 +382,18 @@ for c in mean_cols:
 
 df_comp = df[df["competition"] == competition_filter].copy()
 
+# On groupe uniquement sur player_name + team_name pour éviter les doublons
+# causés par des valeurs de position différentes selon les matchs
+player_season = df_comp.groupby(["player_name", "team_name"]).agg(agg_map).reset_index()
+
+# On rattache la position la plus fréquente pour chaque joueur/équipe
 if "position" in df_comp.columns:
-    player_season = df_comp.groupby(["player_name", "team_name", "position"]).agg(agg_map).reset_index()
-else:
-    player_season = df_comp.groupby(["player_name", "team_name"]).agg(agg_map).reset_index()
+    pos_mode = (
+        df_comp.groupby(["player_name", "team_name"])["position"]
+        .agg(lambda x: x.dropna().mode().iloc[0] if not x.dropna().empty else None)
+        .reset_index()
+    )
+    player_season = player_season.merge(pos_mode, on=["player_name", "team_name"], how="left")
 
 player_season = player_season.rename(columns={"fixture_id": "GP"})
 
@@ -390,7 +417,8 @@ player_season["EVAL"] = (
 player_season["EVAL_PG"] = safe_div(player_season["EVAL"], player_season["GP"])
 
 # =========================
-# AGRÉGATION SAISON ÉQUIPES  ← après la sidebar, filtrée par compétition
+# AGRÉGATION SAISON ÉQUIPES
+# ← après la sidebar, filtrée par compétition
 # =========================
 ts_comp = ts_full[ts_full["competition"] == competition_filter].copy()
 
@@ -452,7 +480,8 @@ team_season = team_agg.rename(columns={
 })
 
 # =========================
-# SUITE SIDEBAR  ← sliders volume qui dépendent de player_season
+# SUITE SIDEBAR
+# ← sliders volume qui dépendent de player_season
 # =========================
 with st.sidebar:
     st.markdown("---")
@@ -494,6 +523,119 @@ if team_filter != "Toutes":
 if pos_filter != "Toutes" and "position" in adv_filtered.columns:
     adv_filtered = adv_filtered[adv_filtered["position"] == pos_filter]
 
+
+# =========================
+# FICHE JOUEUR — DIALOG
+# =========================
+@st.dialog("📄 Fiche joueur", width="large")
+def show_fiche(selected_fiche):
+    pdata   = player_season[player_season["player_name"] == selected_fiche].iloc[0]
+    pmatches = df_comp[df_comp["player_name"] == selected_fiche].copy().sort_values("fixture_id")
+
+    pos_label = pdata.get("position", "—") if "position" in pdata.index else "—"
+    st.markdown(f"## {selected_fiche}")
+    st.caption(f"🏀 {pdata['team_name']}  ·  {pos_label}  ·  {int(pdata['GP'])} matchs joués")
+    st.markdown("---")
+
+    # KPIs
+    k = st.columns(9)
+    for col, (label, val, unit) in zip(k, [
+        ("PTS", pdata.get("PTS_PG", 0), "/m"), ("AST", pdata.get("AST_PG", 0), "/m"),
+        ("REB", pdata.get("REB_PG", 0), "/m"), ("STL", pdata.get("STL_PG", 0), "/m"),
+        ("BLK", pdata.get("BLK_PG", 0), "/m"), ("FG%", pdata.get("FG%", 0), "%"),
+        ("3P%", pdata.get("3P%", 0), "%"),     ("FT%", pdata.get("FT%", 0), "%"),
+        ("TS%", pdata.get("TS%", 0), "%"),
+    ]):
+        col.metric(label, f"{val:.1f}{unit}")
+
+    k2 = st.columns(6)
+    for col, (label, val, unit) in zip(k2, [
+        ("MIN",  pdata.get("MIN_PG", 0),  "/m"), ("USG%", pdata.get("USG%", 0),    "%"),
+        ("ORtg", pdata.get("ORtg", 0),    ""),   ("DRtg", pdata.get("DRtg", 0),    ""),
+        ("PIE",  pdata.get("PIE", 0),     "%"),  ("EVAL", pdata.get("EVAL_PG", 0), "/m"),
+    ]):
+        col.metric(label, f"{val:.1f}{unit}")
+
+    st.markdown("---")
+    col_left, col_right = st.columns(2)
+
+    # Radar
+    with col_left:
+        st.subheader("🕸️ Profil")
+        radar_stats_f = [s for s in ["ORtg","DRtg","TS%","USG%","TRB%","AST%","STL%","BLK%","Floor%","PIE"]
+                         if s in player_season.columns]
+        vals_f = []
+        for s in radar_stats_f:
+            col_max = player_season[s].replace([np.inf,-np.inf], np.nan).max()
+            col_min = player_season[s].replace([np.inf,-np.inf], np.nan).min()
+            norm = safe_div(pdata[s] - col_min, col_max - col_min) * 100
+            if s == "DRtg": norm = 100 - norm
+            vals_f.append(float(norm))
+        fig_r = go.Figure(go.Scatterpolar(
+            r=vals_f + [vals_f[0]], theta=radar_stats_f + [radar_stats_f[0]],
+            fill="toself", line_color="#185FA5", opacity=0.75,
+        ))
+        fig_r.update_layout(polar=dict(radialaxis=dict(visible=True, range=[0,100])),
+                            showlegend=False, height=320, margin=dict(l=30,r=30,t=20,b=20))
+        st.plotly_chart(fig_r, use_container_width=True, key=f"dlg_radar_{selected_fiche}")
+        st.caption("Normalisé 0-100 · DRtg inversé")
+
+    # Percentiles
+    with col_right:
+        st.subheader("📊 Percentiles")
+        pct_rows = []
+        for s in [s for s in ["PTS_PG","AST_PG","REB_PG","STL_PG","BLK_PG","TS%","USG%","PIE","ORtg","DRtg"]
+                  if s in player_season.columns]:
+            series = player_season[s].replace([np.inf,-np.inf], np.nan).dropna()
+            val    = pdata.get(s, np.nan)
+            if pd.isna(val): continue
+            pct = int((series < val).sum() / len(series) * 100)
+            if s == "DRtg": pct = 100 - pct
+            pct_rows.append({"Stat": s, "Valeur": round(float(val),1), "Percentile": pct})
+        if pct_rows:
+            pct_df = pd.DataFrame(pct_rows)
+            pct_df["label"] = pct_df["Percentile"].astype(str) + "e"
+            fig_p = px.bar(pct_df, x="Percentile", y="Stat",
+                           orientation="h", text="label",
+                           color="Percentile", color_continuous_scale="Blues", range_x=[0,100])
+            fig_p.add_vline(x=50, line_dash="dash", line_color="grey", opacity=0.5)
+            fig_p.update_layout(coloraxis_showscale=False, yaxis=dict(autorange="reversed"),
+                                height=320, margin=dict(l=0,r=10,t=10,b=0))
+            fig_p.update_traces(textposition="inside", insidetextanchor="end",
+                                textfont=dict(color="black", size=12))
+            st.plotly_chart(fig_p, use_container_width=True, key=f"dlg_pct_{selected_fiche}")
+
+    st.markdown("---")
+
+    # Évolution match par match
+    st.subheader("📅 Évolution match par match")
+    stat_opts = [s for s in ["PTS","AST","REB","STL","BLK","MIN","GmSc"] if s in pmatches.columns]
+    stats_sel = st.multiselect("Stats", stat_opts,
+                                default=[s for s in ["PTS","AST","REB"] if s in stat_opts],
+                                key=f"dlg_evo_sel_{selected_fiche}")
+    if stats_sel and len(pmatches) > 0:
+        pmatches["match_label"] = (
+            pmatches.get("away_team", pd.Series("", index=pmatches.index)).fillna("") +
+            " @ " +
+            pmatches.get("home_team",  pd.Series("", index=pmatches.index)).fillna("")
+        )
+        fig_e = go.Figure()
+        for i, stat in enumerate(stats_sel):
+            c_ = ["#185FA5","#E05A2B","#2CA02C","#9467BD","#8C564B","#E377C2"][i % 6]
+            fig_e.add_trace(go.Scatter(
+                x=list(range(1, len(pmatches)+1)), y=pmatches[stat].tolist(),
+                mode="lines+markers", name=stat,
+                line=dict(color=c_, width=2), marker=dict(size=6),
+                hovertext=pmatches["match_label"].tolist(),
+                hovertemplate="%{hovertext}<br>" + stat + ": %{y}<extra></extra>",
+            ))
+        fig_e.update_layout(xaxis_title="Match #", height=300,
+                            margin=dict(l=0,r=0,t=20,b=0),
+                            legend=dict(orientation="h", yanchor="bottom", y=1.02),
+                            hovermode="x unified")
+        st.plotly_chart(fig_e, use_container_width=True,
+                        key=f"dlg_evo_{selected_fiche}_{'_'.join(stats_sel)}")
+
 # =========================
 # ONGLETS
 # =========================
@@ -531,7 +673,7 @@ with tab1:
         fig.update_layout(yaxis=dict(autorange="reversed"), coloraxis_showscale=False,
                           margin=dict(l=0, r=0, t=10, b=0), height=400)
         fig.update_traces(textposition="outside")
-        st.plotly_chart(fig, use_container_width=True)
+        st.plotly_chart(fig, use_container_width=True, key=f"top_bar_{competition_filter}_{team_filter}_{stat_col}_{top_n}")
 
         st.markdown("---")
         st.subheader("🎯 Pourcentages de tir")
@@ -582,7 +724,21 @@ with tab1:
 # ══════════════════════════════════════════
 with tab2:
     st.title("📈 Stats classiques — Joueurs")
-    st.caption(f"Saison complète · Minimum {min_min} min · {len(adv_filtered)} joueurs · moyennes par match")
+
+    # ── Recherche joueur avec autocomplétion ───────────────────
+    players_available_classic = sorted(adv_filtered["player_name"].dropna().unique().tolist())
+    selected_classic = st.multiselect(
+        "🔍 Rechercher un joueur (tapez pour filtrer les suggestions)",
+        options=players_available_classic,
+        placeholder="Tapez un nom...",
+        key="search_classic"
+    )
+    adv_classic = adv_filtered.copy()
+    if selected_classic:
+        adv_classic = adv_classic[adv_classic["player_name"].isin(selected_classic)]
+    # ──────────────────────────────────────────────────────────
+
+    st.caption(f"Saison complète · Minimum {min_min} min · {len(adv_classic)} joueurs · moyennes par match")
 
     cols_classic = [
         "player_name", "team_name", "GP", "MIN_PG",
@@ -594,10 +750,9 @@ with tab2:
         "STL_PG", "BLK_PG", "TOV_PG",
         "EVAL_PG"
     ]
-    av = [c for c in cols_classic if c in adv_filtered.columns]
+    av = [c for c in cols_classic if c in adv_classic.columns]
 
-    st.dataframe(
-        adv_filtered[av].rename(columns={
+    df_classic_display = adv_classic[av].rename(columns={
             "player_name": "Joueur", "team_name": "Équipe",
             "MIN_PG": "MIN", "PTS_PG": "PTS",
             "FGM_PG": "FGM", "FGA_PG": "FGA",
@@ -607,9 +762,18 @@ with tab2:
             "DREB_PG": "REB D", "REB_PG": "REB",
             "STL_PG": "STL", "BLK_PG": "BLK",
             "TOV_PG": "TOV", "EVAL_PG": "EVAL"
-        }).round(1).sort_values("PTS", ascending=False),
-        use_container_width=True, height=550
+        }).round(1).sort_values("PTS", ascending=False).reset_index(drop=True)
+    st.caption("💡 Cliquez sur une ligne pour ouvrir la fiche joueur")
+    sel_classic = st.dataframe(
+        df_classic_display,
+        use_container_width=True, height=550,
+        selection_mode="single-row", on_select="rerun",
+        key="sel_classic_table"
     )
+    rows_classic = sel_classic.selection.rows if sel_classic.selection.rows else []
+    if rows_classic:
+        picked = df_classic_display.iloc[rows_classic[0]]["Joueur"]
+        show_fiche(picked)
 
     st.markdown("---")
     st.subheader("🏟️ Stats classiques — Équipes")
@@ -711,7 +875,7 @@ with tab2:
     )
 
     st.download_button("⬇️ Télécharger stats classiques",
-                       adv_filtered[av].round(2).to_csv(index=False).encode("utf-8"),
+                       adv_classic[av].round(2).to_csv(index=False).encode("utf-8"),
                        "stats_classiques_joueurs.csv", "text/csv")
 
 
@@ -720,7 +884,21 @@ with tab2:
 # ══════════════════════════════════════════
 with tab3:
     st.title("📊 Stats avancées — Joueurs")
-    st.caption(f"Saison complète · Minimum {min_min} min · {len(adv_filtered)} joueurs")
+
+    # ── Recherche joueur avec autocomplétion ───────────────────
+    players_available_adv = sorted(adv_filtered["player_name"].dropna().unique().tolist())
+    selected_adv = st.multiselect(
+        "🔍 Rechercher un joueur (tapez pour filtrer les suggestions)",
+        options=players_available_adv,
+        placeholder="Tapez un nom...",
+        key="search_adv"
+    )
+    adv_search = adv_filtered.copy()
+    if selected_adv:
+        adv_search = adv_search[adv_search["player_name"].isin(selected_adv)]
+    # ──────────────────────────────────────────────────────────
+
+    st.caption(f"Saison complète · Minimum {min_min} min · {len(adv_search)} joueurs")
 
     def rd(d, dec=2):
         return d.round(dec)
@@ -743,43 +921,59 @@ with tab3:
 
     with s1:
         cols = base + ["eFG%", "TS%", "FTrate", "3Prate", "GmSc"]
-        av = [c for c in cols if c in adv_filtered.columns]
-        st.dataframe(rd(safe_sort(adv_filtered[av], ["PTS_PG", "eFG%"])),
-                     use_container_width=True, height=500)
-        st.caption("eFG%/TS% = efficacité tir · GmSc = Gamescore (Hollinger)")
+        av = [c for c in cols if c in adv_search.columns]
+        df_s1 = rd(safe_sort(adv_search[av], ["PTS_PG", "eFG%"])).reset_index(drop=True)
+        st.caption("💡 Cliquez sur une ligne pour ouvrir la fiche joueur · eFG%/TS% = efficacité tir · GmSc = Gamescore (Hollinger)")
+        sel_s1 = st.dataframe(df_s1, use_container_width=True, height=500,
+                              selection_mode="single-row", on_select="rerun", key="sel_s1")
+        if sel_s1.selection.rows:
+            show_fiche(df_s1.iloc[sel_s1.selection.rows[0]]["player_name"])
 
     with s2:
         cols = base + ["AST%", "AST/TO", "qAST_pct", "USG%", "TOV%"]
-        av = [c for c in cols if c in adv_filtered.columns]
-        st.dataframe(rd(safe_sort(adv_filtered[av], ["AST%", "USG%"])),
-                     use_container_width=True, height=500)
-        st.caption("AST% = % tirs équipe assistés · USG% = % possessions utilisées · AST/TO = ratio passes/pertes")
+        av = [c for c in cols if c in adv_search.columns]
+        df_s2 = rd(safe_sort(adv_search[av], ["AST%", "USG%"])).reset_index(drop=True)
+        st.caption("💡 Cliquez sur une ligne · AST% = % tirs équipe assistés · USG% = % possessions utilisées · AST/TO = ratio passes/pertes")
+        sel_s2 = st.dataframe(df_s2, use_container_width=True, height=500,
+                              selection_mode="single-row", on_select="rerun", key="sel_s2")
+        if sel_s2.selection.rows:
+            show_fiche(df_s2.iloc[sel_s2.selection.rows[0]]["player_name"])
 
     with s3:
         cols = base + ["OREB%", "DREB%", "TRB%"]
-        av = [c for c in cols if c in adv_filtered.columns]
-        st.dataframe(rd(safe_sort(adv_filtered[av], ["TRB%", "DREB%"])),
-                     use_container_width=True, height=500)
-        st.caption("OREB%/DREB%/TRB% = % rebonds disponibles captés")
+        av = [c for c in cols if c in adv_search.columns]
+        df_s3 = rd(safe_sort(adv_search[av], ["TRB%", "DREB%"])).reset_index(drop=True)
+        st.caption("💡 Cliquez sur une ligne · OREB%/DREB%/TRB% = % rebonds disponibles captés")
+        sel_s3 = st.dataframe(df_s3, use_container_width=True, height=500,
+                              selection_mode="single-row", on_select="rerun", key="sel_s3")
+        if sel_s3.selection.rows:
+            show_fiche(df_s3.iloc[sel_s3.selection.rows[0]]["player_name"])
 
     with s4:
         cols = base + ["STL%", "BLK%", "Stop%"]
-        av = [c for c in cols if c in adv_filtered.columns]
-        st.dataframe(rd(safe_sort(adv_filtered[av], ["STL%", "BLK%"])),
-                     use_container_width=True, height=500)
-        st.caption("Stop% = % possessions adverses stoppées (Dean Oliver)")
+        av = [c for c in cols if c in adv_search.columns]
+        df_s4 = rd(safe_sort(adv_search[av], ["STL%", "BLK%"])).reset_index(drop=True)
+        st.caption("💡 Cliquez sur une ligne · Stop% = % possessions adverses stoppées (Dean Oliver)")
+        sel_s4 = st.dataframe(df_s4, use_container_width=True, height=500,
+                              selection_mode="single-row", on_select="rerun", key="sel_s4")
+        if sel_s4.selection.rows:
+            show_fiche(df_s4.iloc[sel_s4.selection.rows[0]]["player_name"])
 
     with s5:
         cols = base + ["PER", "PIE", "GmSc", "ORtg", "DRtg", "NETRtg", "PM_PG"]
-        av = [c for c in cols if c in adv_filtered.columns]
-        st.dataframe(rd(safe_sort(adv_filtered[av], ["PIE", "PER"])),
-                     use_container_width=True, height=400)
+        av = [c for c in cols if c in adv_search.columns]
+        df_s5 = rd(safe_sort(adv_search[av], ["PIE", "PER"])).reset_index(drop=True)
+        st.caption("💡 Cliquez sur une ligne pour ouvrir la fiche joueur")
+        sel_s5 = st.dataframe(df_s5, use_container_width=True, height=400,
+                              selection_mode="single-row", on_select="rerun", key="sel_s5")
+        if sel_s5.selection.rows:
+            show_fiche(df_s5.iloc[sel_s5.selection.rows[0]]["player_name"])
 
         st.markdown("---")
-        if "ORtg" in adv_filtered.columns and "DRtg" in adv_filtered.columns:
+        if "ORtg" in adv_search.columns and "DRtg" in adv_search.columns:
             st.subheader("ORtg vs DRtg")
             fig2 = px.scatter(
-                adv_filtered, x="ORtg", y="DRtg", text="player_name",
+                adv_search, x="ORtg", y="DRtg", text="player_name",
                 color="team_name", size="MIN",
                 hover_data=["GP", "PER", "PIE", "NETRtg"],
                 labels={"ORtg": "Rating offensif (per 100 poss)",
@@ -792,14 +986,17 @@ with tab3:
 
     with s6:
         cols = base + ["PPP", "Floor%", "USG%", "TOV%", "ORtg", "NETRtg"]
-        av = [c for c in cols if c in adv_filtered.columns]
-        st.dataframe(rd(safe_sort(adv_filtered[av], ["Floor%", "PPP"])),
-                     use_container_width=True, height=500)
-        st.caption("PPP = points/possession · Floor% = % possessions productrices")
+        av = [c for c in cols if c in adv_search.columns]
+        df_s6 = rd(safe_sort(adv_search[av], ["Floor%", "PPP"])).reset_index(drop=True)
+        st.caption("💡 Cliquez sur une ligne · PPP = points/possession · Floor% = % possessions productrices")
+        sel_s6 = st.dataframe(df_s6, use_container_width=True, height=500,
+                              selection_mode="single-row", on_select="rerun", key="sel_s6")
+        if sel_s6.selection.rows:
+            show_fiche(df_s6.iloc[sel_s6.selection.rows[0]]["player_name"])
 
     st.markdown("---")
     st.download_button("⬇️ Télécharger stats avancées joueurs",
-                       adv_filtered.round(3).to_csv(index=False).encode("utf-8"),
+                       adv_search.round(3).to_csv(index=False).encode("utf-8"),
                        "stats_avancees_joueurs.csv", "text/csv")
 
 
