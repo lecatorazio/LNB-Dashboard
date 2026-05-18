@@ -202,7 +202,7 @@ df = df.drop_duplicates(
 )
 
 # =========================
-# STATS AVANCÉES PAR MATCH
+# STATS AVANCÉES PAR MATCH — JOUEURS
 # =========================
 df["eFG%"]   = safe_div(df["FGM"] + 0.5 * df["3PM"], df["FGA"]) * 100
 df["TS%"]    = safe_div(df["PTS"], 2 * (df["FGA"] + 0.44 * df["FTA"])) * 100
@@ -233,25 +233,40 @@ df["Floor%"]  = safe_div(df["ScPoss"], df["TotPoss"]) * 100
 df["PPP"]     = safe_div(df["PTS"], df["TotPoss"])
 df["ORtg"]    = safe_div(df["PProd"] * 100, df["TotPoss"])
 
+# ── Stop% corrigé (Dean Oliver) ──────────────────────────────────────────────
+# On calcule d'abord DORpct et DFGpct à partir des stats adverses agrégées
 df["DORpct"] = safe_div(df["opp_OREB"], df["opp_OREB"] + df["tm_DREB"])
-df["DFGpct"] = safe_div(df["opp_FGM"], df["opp_FGA"])
-df["FMwt"]   = safe_div(
+df["DFGpct"] = safe_div(df["opp_FGM"],  df["opp_FGA"])
+# FMwt = pondération du poids des tirs manqués dans les stops
+df["FMwt"] = safe_div(
     df["DFGpct"] * (1 - df["DORpct"]),
     df["DFGpct"] * (1 - df["DORpct"]) + (1 - df["DFGpct"]) * df["DORpct"]
 )
-df["Stops"] = (
+# Stops individuels : STL + contribution aux BLK + DREB
+df["Stops1"] = (
     df["STL"]
     + df["BLK"] * df["FMwt"] * (1 - 1.07 * df["DORpct"])
     + df["DREB"] * (1 - df["FMwt"])
 )
-df["Stop%"] = safe_div(
-    df["Stops"] * df["tm_POSS"],
-    df["MIN"] / (df["tm_MIN"] / 5) * df["opp_POSS"]
-) * 100
-df["DPts"] = (
-    df["opp_PTS"]
+# Stops2 : contribution aux fautes forçant des lancers ratés
+#   = (FTA_opp * FTM%_opp_raté) * part du joueur dans le temps équipe
+df["Stops2"] = (
+    (df["opp_FTA"] * 0.4)
     * safe_div(df["MIN"], df["tm_MIN"] / 5)
-    * safe_div(df["Stops"], df["opp_POSS"])
+    * safe_div(1 - safe_div(df["opp_FTM"], df["opp_FTA"]), 1)
+)
+df["Stops"] = df["Stops1"] + df["Stops2"]
+# Stop% = possessions stoppées / possessions adverses pendant que le joueur est sur le terrain
+#   opp_POSS pendant le temps joueur = opp_POSS * (MIN / (tm_MIN/5))
+df["tm_ratio"] = safe_div(df["MIN"], df["tm_MIN"] / 5)
+df["Stop%"] = safe_div(
+    df["Stops"],
+    df["opp_POSS"] * df["tm_ratio"]
+) * 100
+
+df["DPts"] = safe_div(
+    df["opp_PTS"] * df["Stops"],
+    df["opp_POSS"]
 )
 df["DRtg"] = safe_div(df["DPts"] * 100, df["Stops"].replace(0, np.nan)).fillna(
     safe_div(df["opp_PTS"] * 100, df["opp_POSS"])
@@ -260,12 +275,12 @@ df["NETRtg"] = df["ORtg"] - df["DRtg"]
 
 df["USG%"] = safe_div(
     df["FGA"] + 0.44 * df["FTA"] + df["TOV"],
-    safe_div(df["MIN"], df["tm_MIN"] / 5) * (df["tm_FGA"] + 0.44 * df["tm_FTA"] + df["tm_TOV"])
+    df["tm_ratio"] * (df["tm_FGA"] + 0.44 * df["tm_FTA"] + df["tm_TOV"])
 ) * 100
 
 df["AST%"]     = safe_div(
     df["AST"],
-    safe_div(df["MIN"], df["tm_MIN"] / 5) * df["tm_FGM"] - df["FGM"]
+    df["tm_ratio"] * df["tm_FGM"] - df["FGM"]
 ) * 100
 df["AST/TO"]   = safe_div(df["AST"], df["TOV"])
 df["qAST_pct"] = df["qAST"] * 100
@@ -288,8 +303,20 @@ df["BLK%"]   = safe_div(
     df["BLK"] * (df["tm_MIN"] / 5),
     df["MIN"] * (df["opp_FGA"] - df["opp_3PA"])
 ) * 100
-df["STOCKS"] = df["STL"] + df["BLK"]
-df["TOV%"]   = safe_div(df["TOV"], df["FGA"] + 0.44 * df["FTA"] + df["TOV"]) * 100
+df["STOCKS"]   = df["STL"] + df["BLK"]
+df["TOV%"]     = safe_div(df["TOV"], df["FGA"] + 0.44 * df["FTA"] + df["TOV"]) * 100
+
+# ── Nouvelles métriques joueurs ──────────────────────────────────────────────
+# Playmaking ratio : AST% divisé par USG% — mesure l'efficacité créatrice
+# relative à la charge offensive du joueur
+df["PM_Ratio"] = safe_div(df["AST%"], df["USG%"])
+
+# BLK/FOUL : ratio blocks sur fautes — qualité défensive sans fouler
+df["BLK/FOUL"] = safe_div(df["BLK"], df["FOUL"])
+
+# TUR (Turnover Ratio) = même que TOV% mais exprimé par 100 possessions utilisées
+# (alias clair pour les scouts)
+df["TUR"] = df["TOV%"]   # déjà calculé = TOV / (FGA + 0.44*FTA + TOV) * 100
 
 df["GmSc"] = (
     df["PTS"] + 0.4 * df["FGM"] - 0.7 * df["FGA"]
@@ -326,7 +353,6 @@ df["PER"] = safe_div(1, df["MIN"]) * (
 
 # =========================
 # SIDEBAR
-# ← competition_filter défini ici en premier
 # =========================
 with st.sidebar:
     st.title("🏀 LNB Dashboard")
@@ -339,8 +365,6 @@ with st.sidebar:
         index=0
     )
 
-    # ── Filtre équipes dynamique : on ne propose que les équipes
-    #    présentes dans la compétition sélectionnée ──────────────
     teams_in_comp = sorted(
         df[df["competition"] == competition_filter]["team_name"]
         .dropna().unique().tolist()
@@ -358,7 +382,6 @@ with st.sidebar:
 
 # =========================
 # AGRÉGATION SAISON JOUEURS
-# ← après la sidebar, filtrée par compétition
 # =========================
 sum_cols = ["MIN", "PTS", "AST", "REB", "OREB", "DREB", "STL", "BLK",
             "TOV", "FGM", "FGA", "FTM", "FTA", "3PM", "3PA", "FOUL",
@@ -367,10 +390,11 @@ sum_cols = ["MIN", "PTS", "AST", "REB", "OREB", "DREB", "STL", "BLK",
 mean_cols = ["eFG%", "TS%", "FTrate", "3Prate",
              "USG%", "AST%", "AST/TO", "qAST_pct",
              "OREB%", "DREB%", "TRB%",
-             "STL%", "BLK%", "TOV%",
+             "STL%", "BLK%", "TOV%", "TUR",
              "Floor%", "PPP",
              "ORtg", "DRtg", "NETRtg",
-             "GmSc", "PIE", "PER", "Stop%"]
+             "GmSc", "PIE", "PER", "Stop%",
+             "PM_Ratio", "BLK/FOUL"]
 
 agg_map = {"fixture_id": "count"}
 for c in sum_cols:
@@ -382,11 +406,8 @@ for c in mean_cols:
 
 df_comp = df[df["competition"] == competition_filter].copy()
 
-# On groupe uniquement sur player_name + team_name pour éviter les doublons
-# causés par des valeurs de position différentes selon les matchs
 player_season = df_comp.groupby(["player_name", "team_name"]).agg(agg_map).reset_index()
 
-# On rattache la position la plus fréquente pour chaque joueur/équipe
 if "position" in df_comp.columns:
     pos_mode = (
         df_comp.groupby(["player_name", "team_name"])["position"]
@@ -399,7 +420,7 @@ player_season = player_season.rename(columns={"fixture_id": "GP"})
 
 for col in ["MIN", "PTS", "AST", "REB", "OREB", "DREB",
             "STL", "BLK", "TOV", "FGM", "FGA", "FTM", "FTA",
-            "3PM", "3PA", "FOUL", "STOCKS", "PM"]:
+            "3PM", "3PA", "FOUL", "STOCKS", "PM", "PProd"]:
     if col in player_season.columns:
         player_season[f"{col}_PG"] = safe_div(player_season[col], player_season["GP"])
 
@@ -418,7 +439,6 @@ player_season["EVAL_PG"] = safe_div(player_season["EVAL"], player_season["GP"])
 
 # =========================
 # AGRÉGATION SAISON ÉQUIPES
-# ← après la sidebar, filtrée par compétition
 # =========================
 ts_comp = ts_full[ts_full["competition"] == competition_filter].copy()
 
@@ -457,6 +477,7 @@ team_agg = ts_comp.groupby("team_name").agg(
     opp_3PM  = ("opp_3PM",  "sum"),
 ).reset_index()
 
+# ── Stats avancées équipes existantes ────────────────────────────────────────
 team_agg["PACE40"] = safe_div(team_agg["tm_POSS"], team_agg["GP"])
 team_agg["eFG%"]   = safe_div(team_agg["tm_FGM"], team_agg["tm_FGA"]) * 100
 team_agg["TS%"]    = safe_div(team_agg["tm_PTS"], 2 * (team_agg["tm_FGA"] + 0.44 * team_agg["tm_FTA"])) * 100
@@ -472,6 +493,88 @@ team_agg["REB_PG"] = safe_div(team_agg["tm_REB"], team_agg["GP"])
 team_agg["TOV_PG"] = safe_div(team_agg["tm_TOV"], team_agg["GP"])
 team_agg["POSS_PG"]= safe_div(team_agg["tm_POSS"], team_agg["GP"])
 
+# ── Nouvelles métriques équipes ───────────────────────────────────────────────
+
+# Team OREB Weight : poids du rebond offensif dans les possessions
+# = OREB / (FGA - FGM + OREB)  — proportion des secondes chances créées
+team_agg["OREB_Weight"] = safe_div(
+    team_agg["tm_OREB"],
+    team_agg["tm_FGA"] - team_agg["tm_FGM"] + team_agg["tm_OREB"]
+) * 100
+
+# Team ScPoss (scoring possessions) : possessions terminées par des points
+# Formule Oliver : PProd / PTS * TotPoss
+# Au niveau équipe on approxime : tm_FGM + (1-(1-FT%)^2)*0.4*FTA + OREB*PPP
+team_agg["tm_FT_pct"]  = safe_div(team_agg["tm_FTM"], team_agg["tm_FTA"])
+team_agg["tm_TotPoss"] = (
+    team_agg["tm_FGA"]
+    - team_agg["tm_OREB"] * safe_div(
+        team_agg["tm_OREB"], team_agg["tm_OREB"] + team_agg["opp_DREB"]
+    )
+    + 0.44 * team_agg["tm_FTA"]
+    + team_agg["tm_TOV"]
+)
+team_agg["tm_ScPoss"] = (
+    team_agg["tm_FGM"]
+    + (1 - (1 - team_agg["tm_FT_pct"]) ** 2) * 0.4 * team_agg["tm_FTA"]
+)
+# Team Play% = ScPoss / TotPoss
+team_agg["Team_Play%"] = safe_div(team_agg["tm_ScPoss"], team_agg["tm_TotPoss"]) * 100
+
+# DPts per ScPoss : points défensifs concédés par possession productive adverse
+# = opp_PTS / (opp ScPoss estimé)
+team_agg["opp_FT_pct"]  = safe_div(team_agg["opp_FTM"], team_agg["opp_FTA"])
+team_agg["opp_ScPoss"]  = (
+    team_agg["opp_FGM"]
+    + (1 - (1 - team_agg["opp_FT_pct"]) ** 2) * 0.4 * team_agg["opp_FTA"]
+)
+team_agg["DPts_per_ScPoss"] = safe_div(team_agg["opp_PTS"], team_agg["opp_ScPoss"])
+
+# Team Assist Rate : % des paniers de l'équipe qui sont assistés
+team_agg["Tm_AST_Rate"] = safe_div(team_agg["tm_AST"], team_agg["tm_FGM"]) * 100
+
+# Assisted FG% : approximation — proportion du scoring venant de jeu assisté
+# = AST * (PTS_moy_sur_panier_assisté) / PTS_total
+# On utilise AST/FGM comme proxy de la fluidité collective
+team_agg["Assisted_FG%"] = team_agg["Tm_AST_Rate"]   # alias lisible ; enrichir si on a les données shot-log
+
+# Team FT Rate (FTA/FGA) = capacité à aller sur la ligne
+team_agg["Tm_FT_Rate"] = safe_div(team_agg["tm_FTA"], team_agg["tm_FGA"]) * 100
+
+# Team TUR (Turnover Rate) = TOV / (FGA + 0.44*FTA + TOV) * 100
+team_agg["Tm_TUR"] = safe_div(
+    team_agg["tm_TOV"],
+    team_agg["tm_FGA"] + 0.44 * team_agg["tm_FTA"] + team_agg["tm_TOV"]
+) * 100
+
+# ── 4 Factors Index ──────────────────────────────────────────────────────────
+# Dean Oliver : eFG%(0.4) + OREB%(0.2) + TOV%(0.15 inversé) + FTRate(0.15)
+# + composante défensive (0.10 sur DRtg normalisé)
+# On normalise chaque facteur sur [0,1] puis on applique les poids
+# pour obtenir un score synthétique sur 100
+def normalize_series(s, invert=False):
+    s = s.replace([np.inf, -np.inf], np.nan)
+    mn, mx = s.min(), s.max()
+    if mx == mn:
+        return pd.Series(0.5, index=s.index)
+    norm = (s - mn) / (mx - mn)
+    return (1 - norm) if invert else norm
+
+ta = team_agg  # alias court
+n_efg   = normalize_series(ta["eFG%"])
+n_oreb  = normalize_series(ta["OREB%"])
+n_tov   = normalize_series(ta["Tm_TUR"],  invert=True)   # moins c'est mieux
+n_ftr   = normalize_series(ta["Tm_FT_Rate"])
+n_drtg  = normalize_series(ta["DRtg"],    invert=True)   # moins c'est mieux
+
+team_agg["Four_Factors_Index"] = (
+    0.40 * n_efg
+    + 0.20 * n_oreb
+    + 0.15 * n_tov
+    + 0.15 * n_ftr
+    + 0.10 * n_drtg
+) * 100
+
 team_season = team_agg.rename(columns={
     "tm_PTS": "PTS", "tm_FGM": "FGM", "tm_FGA": "FGA",
     "tm_FTA": "FTA", "tm_FTM": "FTM", "tm_AST": "AST",
@@ -481,7 +584,6 @@ team_season = team_agg.rename(columns={
 
 # =========================
 # SUITE SIDEBAR
-# ← sliders volume qui dépendent de player_season
 # =========================
 with st.sidebar:
     st.markdown("---")
@@ -528,8 +630,8 @@ if pos_filter != "Toutes" and "position" in adv_filtered.columns:
 # FICHE JOUEUR — DIALOG
 # =========================
 @st.dialog("📄 Fiche joueur", width="large")
-def show_fiche(selected_fiche):
-    pdata   = player_season[player_season["player_name"] == selected_fiche].iloc[0]
+def show_fiche(selected_fiche, pool):
+    pdata    = player_season[player_season["player_name"] == selected_fiche].iloc[0]
     pmatches = df_comp[df_comp["player_name"] == selected_fiche].copy().sort_values("fixture_id")
 
     pos_label = pdata.get("position", "—") if "position" in pdata.index else "—"
@@ -537,7 +639,7 @@ def show_fiche(selected_fiche):
     st.caption(f"🏀 {pdata['team_name']}  ·  {pos_label}  ·  {int(pdata['GP'])} matchs joués")
     st.markdown("---")
 
-    # KPIs
+    # KPIs ligne 1
     k = st.columns(9)
     for col, (label, val, unit) in zip(k, [
         ("PTS", pdata.get("PTS_PG", 0), "/m"), ("AST", pdata.get("AST_PG", 0), "/m"),
@@ -548,26 +650,30 @@ def show_fiche(selected_fiche):
     ]):
         col.metric(label, f"{val:.1f}{unit}")
 
-    k2 = st.columns(6)
+    k2 = st.columns(8)
     for col, (label, val, unit) in zip(k2, [
-        ("MIN",  pdata.get("MIN_PG", 0),  "/m"), ("USG%", pdata.get("USG%", 0),    "%"),
-        ("ORtg", pdata.get("ORtg", 0),    ""),   ("DRtg", pdata.get("DRtg", 0),    ""),
-        ("PIE",  pdata.get("PIE", 0),     "%"),  ("EVAL", pdata.get("EVAL_PG", 0), "/m"),
+        ("MIN",      pdata.get("MIN_PG",   0), "/m"),
+        ("USG%",     pdata.get("USG%",     0), "%"),
+        ("ORtg",     pdata.get("ORtg",     0), ""),
+        ("DRtg",     pdata.get("DRtg",     0), ""),
+        ("PIE",      pdata.get("PIE",      0), "%"),
+        ("EVAL",     pdata.get("EVAL_PG",  0), "/m"),
+        ("PM Ratio", pdata.get("PM_Ratio", 0), ""),
+        ("BLK/FOUL", pdata.get("BLK/FOUL",0), ""),
     ]):
-        col.metric(label, f"{val:.1f}{unit}")
+        col.metric(label, f"{val:.2f}{unit}")
 
     st.markdown("---")
     col_left, col_right = st.columns(2)
 
-    # Radar
     with col_left:
         st.subheader("🕸️ Profil")
         radar_stats_f = [s for s in ["ORtg","DRtg","TS%","USG%","TRB%","AST%","STL%","BLK%","Floor%","PIE"]
-                         if s in player_season.columns]
+                         if s in pool.columns]
         vals_f = []
         for s in radar_stats_f:
-            col_max = player_season[s].replace([np.inf,-np.inf], np.nan).max()
-            col_min = player_season[s].replace([np.inf,-np.inf], np.nan).min()
+            col_max = pool[s].replace([np.inf,-np.inf], np.nan).max()
+            col_min = pool[s].replace([np.inf,-np.inf], np.nan).min()
             norm = safe_div(pdata[s] - col_min, col_max - col_min) * 100
             if s == "DRtg": norm = 100 - norm
             vals_f.append(float(norm))
@@ -580,18 +686,21 @@ def show_fiche(selected_fiche):
         st.plotly_chart(fig_r, use_container_width=True, key=f"dlg_radar_{selected_fiche}")
         st.caption("Normalisé 0-100 · DRtg inversé")
 
-    # Percentiles
     with col_right:
         st.subheader("📊 Percentiles")
+        st.caption(f"Calculés sur {len(pool)} joueurs · min. {min_min} min")
         pct_rows = []
-        for s in [s for s in ["PTS_PG","AST_PG","REB_PG","STL_PG","BLK_PG","TS%","USG%","PIE","ORtg","DRtg"]
-                  if s in player_season.columns]:
-            series = player_season[s].replace([np.inf,-np.inf], np.nan).dropna()
+        for s in [s for s in [
+            "TS%","ORtg","DRtg","NETRtg","PIE","PER","USG%","AST%","TRB%",
+            "Stop%","Floor%","PM_Ratio","BLK/FOUL","TUR"
+        ] if s in pool.columns]:
+            series = pool[s].replace([np.inf, -np.inf], np.nan).dropna()
             val    = pdata.get(s, np.nan)
-            if pd.isna(val): continue
+            if pd.isna(val) or len(series) == 0:
+                continue
             pct = int((series < val).sum() / len(series) * 100)
-            if s == "DRtg": pct = 100 - pct
-            pct_rows.append({"Stat": s, "Valeur": round(float(val),1), "Percentile": pct})
+            if s in ("DRtg", "TUR"): pct = 100 - pct
+            pct_rows.append({"Stat": s, "Valeur": round(float(val),2), "Percentile": pct})
         if pct_rows:
             pct_df = pd.DataFrame(pct_rows)
             pct_df["label"] = pct_df["Percentile"].astype(str) + "e"
@@ -600,14 +709,12 @@ def show_fiche(selected_fiche):
                            color="Percentile", color_continuous_scale="Blues", range_x=[0,100])
             fig_p.add_vline(x=50, line_dash="dash", line_color="grey", opacity=0.5)
             fig_p.update_layout(coloraxis_showscale=False, yaxis=dict(autorange="reversed"),
-                                height=320, margin=dict(l=0,r=10,t=10,b=0))
+                                height=340, margin=dict(l=0,r=10,t=10,b=0))
             fig_p.update_traces(textposition="inside", insidetextanchor="end",
                                 textfont=dict(color="black", size=12))
             st.plotly_chart(fig_p, use_container_width=True, key=f"dlg_pct_{selected_fiche}")
 
     st.markdown("---")
-
-    # Évolution match par match
     st.subheader("📅 Évolution match par match")
     stat_opts = [s for s in ["PTS","AST","REB","STL","BLK","MIN","GmSc"] if s in pmatches.columns]
     stats_sel = st.multiselect("Stats", stat_opts,
@@ -673,11 +780,13 @@ with tab1:
         fig.update_layout(yaxis=dict(autorange="reversed"), coloraxis_showscale=False,
                           margin=dict(l=0, r=0, t=10, b=0), height=400)
         fig.update_traces(textposition="outside")
-        st.plotly_chart(fig, use_container_width=True, key=f"top_bar_{competition_filter}_{team_filter}_{stat_col}_{top_n}")
+        st.plotly_chart(fig, use_container_width=True,
+                        key=f"top_bar_{competition_filter}_{team_filter}_{stat_col}_{top_n}")
 
         st.markdown("---")
         st.subheader("🎯 Pourcentages de tir")
-        pct = adv_filtered[["player_name", "team_name", "GP", "FG%", "FGA_PG", "3P%", "3PA_PG", "FT%", "FTA_PG"]].copy()
+        pct = adv_filtered[["player_name", "team_name", "GP",
+                             "FG%", "FGA_PG", "3P%", "3PA_PG", "FT%", "FTA_PG"]].copy()
         pct = pct.rename(columns={
             "player_name": "Joueur", "team_name": "Équipe",
             "FGA_PG": "FGA/G", "3PA_PG": "3PA/G", "FTA_PG": "FTA/G"
@@ -702,7 +811,8 @@ with tab1:
         "opp_FGM", "opp_FGA", "opp_FTA", "opp_FTM", "opp_OREB", "opp_DREB",
         "opp_REB", "opp_TOV", "opp_PTS", "opp_POSS", "opp_3PA", "opp_AST", "opp_MIN",
         "DORpct", "DFGpct", "FMwt", "PIE_num", "PIE_den", "ScPoss", "DPts",
-        "FG_part", "AST_part", "FT_part", "OREB_part", "qAST",
+        "FG_part", "AST_part", "FT_part", "OREB_part", "qAST", "tm_ratio",
+        "Stops1", "Stops2",
     ]
     display_cols = [c for c in df_filtered.columns if c not in cols_to_hide]
     priority = ["player_name", "team_name", "home_team", "away_team", "position"]
@@ -725,7 +835,6 @@ with tab1:
 with tab2:
     st.title("📈 Stats classiques — Joueurs")
 
-    # ── Recherche joueur avec autocomplétion ───────────────────
     players_available_classic = sorted(adv_filtered["player_name"].dropna().unique().tolist())
     selected_classic = st.multiselect(
         "🔍 Rechercher un joueur (tapez pour filtrer les suggestions)",
@@ -736,7 +845,6 @@ with tab2:
     adv_classic = adv_filtered.copy()
     if selected_classic:
         adv_classic = adv_classic[adv_classic["player_name"].isin(selected_classic)]
-    # ──────────────────────────────────────────────────────────
 
     st.caption(f"Saison complète · Minimum {min_min} min · {len(adv_classic)} joueurs · moyennes par match")
 
@@ -747,22 +855,23 @@ with tab2:
         "3PM_PG", "3PA_PG", "3P%",
         "FTM_PG", "FTA_PG", "FT%",
         "AST_PG", "OREB_PG", "DREB_PG", "REB_PG",
-        "STL_PG", "BLK_PG", "TOV_PG",
+        "STL_PG", "BLK_PG", "TOV_PG", "STOCKS_PG",
         "EVAL_PG"
     ]
     av = [c for c in cols_classic if c in adv_classic.columns]
 
     df_classic_display = adv_classic[av].rename(columns={
-            "player_name": "Joueur", "team_name": "Équipe",
-            "MIN_PG": "MIN", "PTS_PG": "PTS",
-            "FGM_PG": "FGM", "FGA_PG": "FGA",
-            "3PM_PG": "3PM", "3PA_PG": "3PA",
-            "FTM_PG": "FTM", "FTA_PG": "FTA",
-            "AST_PG": "AST", "OREB_PG": "REB O",
-            "DREB_PG": "REB D", "REB_PG": "REB",
-            "STL_PG": "STL", "BLK_PG": "BLK",
-            "TOV_PG": "TOV", "EVAL_PG": "EVAL"
-        }).round(1).sort_values("PTS", ascending=False).reset_index(drop=True)
+        "player_name": "Joueur", "team_name": "Équipe",
+        "MIN_PG": "MIN", "PTS_PG": "PTS",
+        "FGM_PG": "FGM", "FGA_PG": "FGA",
+        "3PM_PG": "3PM", "3PA_PG": "3PA",
+        "FTM_PG": "FTM", "FTA_PG": "FTA",
+        "AST_PG": "AST", "OREB_PG": "REB O",
+        "DREB_PG": "REB D", "REB_PG": "REB",
+        "STL_PG": "STL", "BLK_PG": "BLK",
+        "TOV_PG": "TOV", "STOCKS_PG": "STOCKS",
+        "EVAL_PG": "EVAL"
+    }).round(1).sort_values("PTS", ascending=False).reset_index(drop=True)
     st.caption("💡 Cliquez sur une ligne pour ouvrir la fiche joueur")
     sel_classic = st.dataframe(
         df_classic_display,
@@ -773,7 +882,7 @@ with tab2:
     rows_classic = sel_classic.selection.rows if sel_classic.selection.rows else []
     if rows_classic:
         picked = df_classic_display.iloc[rows_classic[0]]["Joueur"]
-        show_fiche(picked)
+        show_fiche(picked, adv_filtered)
 
     st.markdown("---")
     st.subheader("🏟️ Stats classiques — Équipes")
@@ -885,7 +994,6 @@ with tab2:
 with tab3:
     st.title("📊 Stats avancées — Joueurs")
 
-    # ── Recherche joueur avec autocomplétion ───────────────────
     players_available_adv = sorted(adv_filtered["player_name"].dropna().unique().tolist())
     selected_adv = st.multiselect(
         "🔍 Rechercher un joueur (tapez pour filtrer les suggestions)",
@@ -896,7 +1004,6 @@ with tab3:
     adv_search = adv_filtered.copy()
     if selected_adv:
         adv_search = adv_search[adv_search["player_name"].isin(selected_adv)]
-    # ──────────────────────────────────────────────────────────
 
     st.caption(f"Saison complète · Minimum {min_min} min · {len(adv_search)} joueurs")
 
@@ -914,30 +1021,42 @@ with tab3:
     base = ["player_name", "team_name", "GP", "MIN_PG"]
 
     s1, s2, s3, s4, s5, s6 = st.tabs([
-        "🎯 Tirs & scoring", "🎩 Playmaking",
-        "💪 Rebonds", "🛡️ Défense",
-        "⚡ Efficacité", "🔁 Possessions"
+        "🎯 Tirs & scoring",
+        "🎩 Playmaking",
+        "💪 Rebonds",
+        "🛡️ Défense",
+        "⚡ Efficacité",
+        "🔁 Possessions",
     ])
 
     with s1:
-        cols = base + ["eFG%", "TS%", "FTrate", "3Prate", "GmSc"]
+        cols = base + ["eFG%", "TS%", "FTrate", "3Prate", "GmSc", "PProd_PG"]
         av = [c for c in cols if c in adv_search.columns]
         df_s1 = rd(safe_sort(adv_search[av], ["PTS_PG", "eFG%"])).reset_index(drop=True)
-        st.caption("💡 Cliquez sur une ligne pour ouvrir la fiche joueur · eFG%/TS% = efficacité tir · GmSc = Gamescore (Hollinger)")
+        st.caption(
+            "💡 Cliquez sur une ligne pour ouvrir la fiche joueur · "
+            "eFG%/TS% = efficacité tir · GmSc = Gamescore (Hollinger) · "
+            "PProd = points produits (Oliver)"
+        )
         sel_s1 = st.dataframe(df_s1, use_container_width=True, height=500,
                               selection_mode="single-row", on_select="rerun", key="sel_s1")
         if sel_s1.selection.rows:
-            show_fiche(df_s1.iloc[sel_s1.selection.rows[0]]["player_name"])
+            show_fiche(df_s1.iloc[sel_s1.selection.rows[0]]["player_name"], adv_filtered)
 
     with s2:
-        cols = base + ["AST%", "AST/TO", "qAST_pct", "USG%", "TOV%"]
+        cols = base + ["AST%", "AST/TO", "qAST_pct", "USG%", "TOV%", "TUR", "PM_Ratio"]
         av = [c for c in cols if c in adv_search.columns]
         df_s2 = rd(safe_sort(adv_search[av], ["AST%", "USG%"])).reset_index(drop=True)
-        st.caption("💡 Cliquez sur une ligne · AST% = % tirs équipe assistés · USG% = % possessions utilisées · AST/TO = ratio passes/pertes")
+        st.caption(
+            "💡 Cliquez sur une ligne · "
+            "AST% = % tirs équipe assistés · USG% = % possessions utilisées · "
+            "TUR = turnover rate (% poss perdues) · "
+            "PM Ratio = AST%/USG% (création relative à la charge offensive)"
+        )
         sel_s2 = st.dataframe(df_s2, use_container_width=True, height=500,
                               selection_mode="single-row", on_select="rerun", key="sel_s2")
         if sel_s2.selection.rows:
-            show_fiche(df_s2.iloc[sel_s2.selection.rows[0]]["player_name"])
+            show_fiche(df_s2.iloc[sel_s2.selection.rows[0]]["player_name"], adv_filtered)
 
     with s3:
         cols = base + ["OREB%", "DREB%", "TRB%"]
@@ -947,17 +1066,21 @@ with tab3:
         sel_s3 = st.dataframe(df_s3, use_container_width=True, height=500,
                               selection_mode="single-row", on_select="rerun", key="sel_s3")
         if sel_s3.selection.rows:
-            show_fiche(df_s3.iloc[sel_s3.selection.rows[0]]["player_name"])
+            show_fiche(df_s3.iloc[sel_s3.selection.rows[0]]["player_name"], adv_filtered)
 
     with s4:
-        cols = base + ["STL%", "BLK%", "Stop%"]
+        cols = base + ["STL%", "BLK%", "Stop%", "STOCKS_PG", "BLK/FOUL"]
         av = [c for c in cols if c in adv_search.columns]
-        df_s4 = rd(safe_sort(adv_search[av], ["STL%", "BLK%"])).reset_index(drop=True)
-        st.caption("💡 Cliquez sur une ligne · Stop% = % possessions adverses stoppées (Dean Oliver)")
+        df_s4 = rd(safe_sort(adv_search[av], ["Stop%", "STL%"])).reset_index(drop=True)
+        st.caption(
+            "💡 Cliquez sur une ligne · "
+            "Stop% = % possessions adverses stoppées (Oliver, corrigé Stops1+Stops2) · "
+            "STOCKS = STL+BLK par match · BLK/FOUL = ratio blocks/fautes"
+        )
         sel_s4 = st.dataframe(df_s4, use_container_width=True, height=500,
                               selection_mode="single-row", on_select="rerun", key="sel_s4")
         if sel_s4.selection.rows:
-            show_fiche(df_s4.iloc[sel_s4.selection.rows[0]]["player_name"])
+            show_fiche(df_s4.iloc[sel_s4.selection.rows[0]]["player_name"], adv_filtered)
 
     with s5:
         cols = base + ["PER", "PIE", "GmSc", "ORtg", "DRtg", "NETRtg", "PM_PG"]
@@ -967,7 +1090,7 @@ with tab3:
         sel_s5 = st.dataframe(df_s5, use_container_width=True, height=400,
                               selection_mode="single-row", on_select="rerun", key="sel_s5")
         if sel_s5.selection.rows:
-            show_fiche(df_s5.iloc[sel_s5.selection.rows[0]]["player_name"])
+            show_fiche(df_s5.iloc[sel_s5.selection.rows[0]]["player_name"], adv_filtered)
 
         st.markdown("---")
         if "ORtg" in adv_search.columns and "DRtg" in adv_search.columns:
@@ -985,14 +1108,18 @@ with tab3:
         st.caption("PER/PIE/GmSc = moyenne par match · ORtg/DRtg per 100 possessions (Dean Oliver)")
 
     with s6:
-        cols = base + ["PPP", "Floor%", "USG%", "TOV%", "ORtg", "NETRtg"]
+        cols = base + ["PPP", "Floor%", "USG%", "TOV%", "TUR", "ORtg", "NETRtg", "PProd_PG"]
         av = [c for c in cols if c in adv_search.columns]
         df_s6 = rd(safe_sort(adv_search[av], ["Floor%", "PPP"])).reset_index(drop=True)
-        st.caption("💡 Cliquez sur une ligne · PPP = points/possession · Floor% = % possessions productrices")
+        st.caption(
+            "💡 Cliquez sur une ligne · "
+            "PPP = points/possession · Floor% = % possessions productrices · "
+            "TUR = turnover rate · PProd = points produits/match"
+        )
         sel_s6 = st.dataframe(df_s6, use_container_width=True, height=500,
                               selection_mode="single-row", on_select="rerun", key="sel_s6")
         if sel_s6.selection.rows:
-            show_fiche(df_s6.iloc[sel_s6.selection.rows[0]]["player_name"])
+            show_fiche(df_s6.iloc[sel_s6.selection.rows[0]]["player_name"], adv_filtered)
 
     st.markdown("---")
     st.download_button("⬇️ Télécharger stats avancées joueurs",
@@ -1011,13 +1138,19 @@ with tab4:
         best_net = team_season.loc[team_season["NETRtg"].idxmax()]
         best_off = team_season.loc[team_season["ORtg"].idxmax()]
         best_def = team_season.loc[team_season["DRtg"].idxmin()]
-        k1, k2, k3 = st.columns(3)
-        k1.metric("Meilleur NETRtg", best_net["team_name"], f"{best_net['NETRtg']:.1f}")
-        k2.metric("Meilleure attaque", best_off["team_name"], f"{best_off['ORtg']:.1f} ORtg")
-        k3.metric("Meilleure défense", best_def["team_name"], f"{best_def['DRtg']:.1f} DRtg")
+        best_4f  = team_season.loc[team_season["Four_Factors_Index"].idxmax()]
+        k1, k2, k3, k4 = st.columns(4)
+        k1.metric("Meilleur NETRtg",   best_net["team_name"], f"{best_net['NETRtg']:.1f}")
+        k2.metric("Meilleure attaque",  best_off["team_name"], f"{best_off['ORtg']:.1f} ORtg")
+        k3.metric("Meilleure défense",  best_def["team_name"], f"{best_def['DRtg']:.1f} DRtg")
+        k4.metric("4 Factors Index",    best_4f["team_name"],  f"{best_4f['Four_Factors_Index']:.1f}")
 
     st.markdown("---")
-    te1, = st.tabs(["📈 Ratings & efficacité"])
+    te1, te2, te3 = st.tabs([
+        "📈 Ratings & efficacité",
+        "🔬 4 Factors & création",
+        "🛡️ Métriques défensives",
+    ])
 
     with te1:
         cols = ["team_name", "GP", "ORtg", "DRtg", "NETRtg", "PPP",
@@ -1036,6 +1169,79 @@ with tab4:
         fig3.update_traces(textposition="top center", textfont_size=10)
         fig3.update_layout(height=450, margin=dict(l=0, r=0, t=30, b=0))
         st.plotly_chart(fig3, use_container_width=True)
+
+    with te2:
+        st.subheader("4 Factors & métriques de création")
+        cols_4f = [
+            "team_name", "GP",
+            "Four_Factors_Index",
+            "eFG%", "OREB%", "Tm_TUR", "Tm_FT_Rate",
+            "Tm_AST_Rate", "Assisted_FG%",
+            "Team_Play%", "tm_ScPoss", "OREB_Weight",
+        ]
+        av_4f = [c for c in cols_4f if c in team_season.columns]
+        st.dataframe(
+            team_season[av_4f].rename(columns={
+                "team_name":        "Équipe",
+                "Four_Factors_Index": "4F Index",
+                "Tm_TUR":           "TUR%",
+                "Tm_FT_Rate":       "FT Rate",
+                "Tm_AST_Rate":      "AST Rate",
+                "Assisted_FG%":     "Assisted FG%",
+                "Team_Play%":       "Play%",
+                "tm_ScPoss":        "ScPoss",
+                "OREB_Weight":      "OREB Weight",
+            }).round(2).sort_values("4F Index", ascending=False),
+            use_container_width=True, height=420
+        )
+        st.caption(
+            "**4F Index** (Oliver) = 0.40×eFG% + 0.20×OREB% + 0.15×TUR%(inv) + 0.15×FT Rate + 0.10×DRtg(inv) · "
+            "**OREB Weight** = OREB / (FGA−FGM+OREB) · "
+            "**Play%** = ScPoss / TotPoss · "
+            "**AST Rate** = AST / FGM · "
+            "**TUR%** = TOV / (FGA+0.44×FTA+TOV)"
+        )
+
+        st.markdown("---")
+        if "Four_Factors_Index" in team_season.columns:
+            st.subheader("4 Factors Index — classement")
+            fig_4f = px.bar(
+                team_season.sort_values("Four_Factors_Index", ascending=True),
+                x="Four_Factors_Index", y="team_name", orientation="h",
+                color="Four_Factors_Index", color_continuous_scale="Blues",
+                text_auto=".1f",
+            )
+            fig_4f.update_layout(
+                coloraxis_showscale=False,
+                yaxis_title="", xaxis_title="4 Factors Index (0-100)",
+                height=max(300, len(team_season) * 28),
+                margin=dict(l=0, r=0, t=20, b=0),
+            )
+            fig_4f.update_traces(textposition="outside")
+            st.plotly_chart(fig_4f, use_container_width=True)
+
+    with te3:
+        st.subheader("Métriques défensives équipes")
+        cols_def = [
+            "team_name", "GP",
+            "DRtg", "OREB%",
+            "DPts_per_ScPoss",
+            "opp_ScPoss", "opp_POSS",
+        ]
+        av_def = [c for c in cols_def if c in team_season.columns]
+        st.dataframe(
+            team_season[av_def].rename(columns={
+                "team_name":        "Équipe",
+                "DPts_per_ScPoss":  "DPts/ScPoss",
+                "opp_ScPoss":       "Opp ScPoss",
+                "opp_POSS":         "Opp Poss",
+            }).round(2).sort_values("DRtg", ascending=True),
+            use_container_width=True, height=420
+        )
+        st.caption(
+            "**DPts/ScPoss** = points concédés par possession productive adverse · "
+            "**Opp ScPoss** = possessions productrices accordées à l'adversaire"
+        )
 
     st.markdown("---")
     st.download_button("⬇️ Télécharger stats avancées équipes",
@@ -1064,9 +1270,12 @@ with tab5:
         d2 = player_season[player_season["player_name"] == p2].iloc[0]
 
         st.markdown("---")
-        stats_kpi = ["GP", "MIN_PG", "PTS_PG", "AST_PG", "REB_PG", "STL_PG", "BLK_PG",
-                     "FG%", "3P%", "FT%", "EVAL_PG",
-                     "ORtg", "DRtg", "NETRtg", "PER", "PIE", "TS%", "USG%"]
+        stats_kpi = [
+            "GP", "MIN_PG", "PTS_PG", "AST_PG", "REB_PG", "STL_PG", "BLK_PG",
+            "FG%", "3P%", "FT%", "EVAL_PG",
+            "ORtg", "DRtg", "NETRtg", "PER", "PIE", "TS%", "USG%",
+            "PM_Ratio", "BLK/FOUL", "TUR", "STOCKS_PG", "PProd_PG",
+        ]
         stats_kpi = [s for s in stats_kpi if s in player_season.columns]
 
         cols_kpi = st.columns(len(stats_kpi))
@@ -1075,7 +1284,7 @@ with tab5:
             cols_kpi[i].metric(
                 stat, f"{v1:.1f}",
                 delta=f"{v1 - v2:+.1f}",
-                delta_color="normal" if stat != "DRtg" else "inverse"
+                delta_color="normal" if stat not in ("DRtg", "TUR") else "inverse"
             )
 
         st.markdown("---")
