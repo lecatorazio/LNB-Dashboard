@@ -760,12 +760,6 @@ tab1, tab2, tab3, tab4, tab5 = st.tabs([
 with tab1:
     st.title("🏀 Dashboard")
 
-    k1, k2, k3, k4 = st.columns(4)
-    k1.metric("Joueurs uniques", df_filtered["player_name"].nunique())
-    k2.metric("Matchs", df_filtered["fixture_id"].nunique())
-    k3.metric("Lignes filtrées", len(df_filtered))
-    k4.metric("Lignes totales", len(df))
-
     st.markdown("---")
 
     if stat_col and len(adv_filtered) > 0:
