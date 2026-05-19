@@ -777,52 +777,6 @@ with tab1:
         st.plotly_chart(fig, use_container_width=True,
                         key=f"top_bar_{competition_filter}_{team_filter}_{stat_col}_{top_n}")
 
-        st.markdown("---")
-        st.subheader("🎯 Pourcentages de tir")
-        pct = adv_filtered[["player_name", "team_name", "GP",
-                             "FG%", "FGA_PG", "3P%", "3PA_PG", "FT%", "FTA_PG"]].copy()
-        pct = pct.rename(columns={
-            "player_name": "Joueur", "team_name": "Équipe",
-            "FGA_PG": "FGA/G", "3PA_PG": "3PA/G", "FTA_PG": "FTA/G"
-        })
-        st.dataframe(pct.round(1).sort_values("FG%", ascending=False),
-                     use_container_width=True, height=400)
-
-    st.markdown("---")
-    st.subheader("📋 Données filtrées")
-
-    c1, c2 = st.columns([3, 1])
-    with c1:
-        st.caption(f"{len(df_filtered)} lignes · {df_filtered.shape[1]} colonnes")
-    with c2:
-        st.download_button("⬇️ CSV", df_filtered.to_csv(index=False).encode("utf-8"),
-                           "boxscores_filtres.csv", "text/csv")
-
-    cols_to_hide = [
-        "fixture_id", "player_id", "team_id", "side", "opp_team_name",
-        "tm_FGM", "tm_FGA", "tm_FTA", "tm_FTM", "tm_OREB", "tm_DREB",
-        "tm_REB", "tm_TOV", "tm_PTS", "tm_POSS", "tm_3PA", "tm_AST", "tm_MIN",
-        "opp_FGM", "opp_FGA", "opp_FTA", "opp_FTM", "opp_OREB", "opp_DREB",
-        "opp_REB", "opp_TOV", "opp_PTS", "opp_POSS", "opp_3PA", "opp_AST", "opp_MIN",
-        "DORpct", "DFGpct", "FMwt", "PIE_num", "PIE_den", "ScPoss", "DPts",
-        "FG_part", "AST_part", "FT_part", "OREB_part", "qAST", "tm_ratio",
-        "Stops1", "Stops2",
-    ]
-    display_cols = [c for c in df_filtered.columns if c not in cols_to_hide]
-    priority = ["player_name", "team_name", "home_team", "away_team", "position"]
-    front = [c for c in priority if c in display_cols]
-    rest  = [c for c in display_cols if c not in front]
-    display_cols = front + rest
-
-    st.dataframe(df_filtered[display_cols].rename(columns={"bib": "numéro"}),
-                 use_container_width=True, height=500)
-
-    with st.expander("🧾 Aperçu données brutes (5 premières lignes)"):
-        st.dataframe(df[display_cols].rename(columns={"bib": "numéro"}).head(),
-                     use_container_width=True)
-        st.caption(f"Dataset complet : {df.shape[0]} lignes · {df.shape[1]} colonnes")
-
-
 # ══════════════════════════════════════════
 # ONGLET 2 — STATS CLASSIQUES
 # ══════════════════════════════════════════
